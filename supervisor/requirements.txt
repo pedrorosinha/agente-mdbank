@@ -3,5 +3,6 @@ uvicorn
 langchain
 langchain_openai
 langchain-community
+langchain-groq
 httpx
 python-dotenv

@@ -1,15 +1,17 @@
+
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
-from langchain.chat_models import init_chat_model
+from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-__llm = init_chat_model(
-    model="gpt-5.5-pro-2026-04-23",
-    api_key=os.getenv("OPENAI_API_KEY"),
-    temperature=0.7
+__llm = ChatGroq(
+    model="openai/gpt-oss-20b",
+    api_key=os.getenv("GROQ_API_KEY"),
+    temperature=0.7,
+    reasoning_format="hidden"
 )
 
 agente_cartao_credito = create_agent(
@@ -26,11 +28,12 @@ agente_abertura_conta = create_agent(
     tools=[],
     system_prompt=(
         "Você é um especialista em abertura de conta do banco MDBank. "
-        "Ajude o cliente a abrir uma conta e explique os tipos de conta disponíveis."
+        "Ajude o cliente a abrir uma conta e explique os tipos de conta disponíveis que são "
+        "contas simples e conta completa."
     )
 )
 
-def classificar_pergunta(pergunta: str) -> str:
+async def classificar_pergunta(pergunta: str) -> str:
     prompt = f"""
     Classifique a intenção do usuário.
 
@@ -42,23 +45,30 @@ def classificar_pergunta(pergunta: str) -> str:
 
     Responda apenas com o nome do agente.
     """
-    resposta = __llm.invoke(prompt)
-    return str(resposta.content).strip()
+
+    resposta = await __llm.ainvoke(prompt)
+    return str(resposta.content).strip().lower()
+
 
 async def executar_supervisor(texto_usuario: str) -> str:
-    agente = classificar_pergunta(texto_usuario)
-    
+    agente = await classificar_pergunta(texto_usuario)
+
     if agente == "cartao_credito":
-        resultado = agente_cartao_credito.invoke(
+        resultado = await agente_cartao_credito.ainvoke(
             {"messages": [HumanMessage(content=texto_usuario)]}
         )
+
     elif agente == "abrir_conta":
-        resultado = agente_abertura_conta.invoke(
+        resultado = await agente_abertura_conta.ainvoke(
             {"messages": [HumanMessage(content=texto_usuario)]}
         )
+
     else:
-        resultado = "Não consegui entender a sua solicitação. Por favor, reformule a pergunta."
-    
+        return (
+            "Não consegui entender a sua solicitação. "
+            "Por favor, reformule a pergunta."
+        )
+
     mensagem_ia = resultado["messages"][-1]
-    
-    return mensagem_ia.content
+
+    return str(mensagem_ia.content)
