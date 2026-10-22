@@ -21,22 +21,22 @@ agente_cartao_credito = create_agent(
     __llm,
     tools=[],
     system_prompt=(
-        "Você é um especialista em cartão de crédito do banco MDBank. "
-        "Os cartões que existem no MDBank são: [platinum, gold, silver e mdzao]."
+        "Você é um especialista em cartão de crédito do banco MDBank e sempre avise que você é um agente de ia no final da resposta. "
+        "Os cartões que existem no MDBank são: [platinum, gold, silver, md_card e cartao_bronze]."
         "Ajude o cliente com dúvidas, solicitações e limites."
     )
 )
 
 class CartaoCreditoRequest(BaseModel):
     message: str
-    
+
 @app.post("/send")
 async def consultar(request: CartaoCreditoRequest):
     mensagem = request.message
     if not mensagem:
         raise HTTPException(
             status_code=400, detail="Campo 'message' é obrigatório.")
-    
+
     try:
         resultado = agente_cartao_credito.invoke(
             {"messages": [HumanMessage(content=mensagem)]}
@@ -45,7 +45,7 @@ async def consultar(request: CartaoCreditoRequest):
         return {"resposta": mensagem_ia.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.get("/")
 async def health():
     return {"status": "ok"}

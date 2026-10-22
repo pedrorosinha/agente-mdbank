@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Request, HTTPException
+import os
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
-from dotenv import load_dotenv
 from pydantic import BaseModel
-import os
 
 load_dotenv()
 
@@ -29,14 +30,14 @@ agente_abertura_conta = create_agent(
 
 class AbrirContaRequest(BaseModel):
     message: str
-    
+
 @app.post("/send")
 async def consultar(request: AbrirContaRequest):
     mensagem = request.message
     if not mensagem:
         raise HTTPException(
             status_code=400, detail="Campo 'message' é obrigatório.")
-    
+
     try:
         resultado = agente_abertura_conta.invoke(
             {"messages": [HumanMessage(content=mensagem)]}
@@ -45,7 +46,7 @@ async def consultar(request: AbrirContaRequest):
         return {"resposta": mensagem_ia.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.get("/")
 async def health():
     return {"status": "ok"}
