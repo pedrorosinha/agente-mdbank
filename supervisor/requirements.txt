@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+langgraph
 langchain
 langchain_openai
 langchain-community

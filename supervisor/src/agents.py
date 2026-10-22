@@ -1,9 +1,12 @@
-
-from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
+import logging
 import os
+
+from dotenv import load_dotenv
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -11,64 +14,48 @@ __llm = ChatGroq(
     model="openai/gpt-oss-20b",
     api_key=os.getenv("GROQ_API_KEY"),
     temperature=0.7,
-    reasoning_format="hidden"
+    reasoning_format="hidden",
 )
 
-agente_cartao_credito = create_agent(
-    __llm,
-    tools=[],
-    system_prompt=(
-        "Você é um especialista em cartão de crédito do banco MDBank. "
-        "Ajude o cliente com dúvidas, solicitação e limites."
+
+class RouterOutput(BaseModel):
+    agents: list[str] = Field(
+        description="Lista de agentes que devem responder a pergunta"
     )
-)
 
-agente_abertura_conta = create_agent(
-    __llm,
-    tools=[],
-    system_prompt=(
-        "Você é um especialista em abertura de conta do banco MDBank. "
-        "Ajude o cliente a abrir uma conta e explique os tipos de conta disponíveis que são "
-        "contas simples e conta completa."
-    )
-)
 
-async def classificar_pergunta(pergunta: str) -> str:
-    prompt = f"""
-    Classifique a intenção do usuário.
+parser = JsonOutputParser(pydantic_object=RouterOutput)
 
-    Possíveis agentes:
-    cartao_credito
-    abrir_conta
 
-    Pergunta: {pergunta}
-
-    Responda apenas com o nome do agente.
+def classifique_intencao_usuario(query: str) -> list[dict]:
+    """
+    Classifica a pergunta e retorna quais agentes devem ser chamados.
     """
 
-    resposta = await __llm.ainvoke(prompt)
-    return str(resposta.content).strip().lower()
+    prompt = f"""
+Você é um roteador de agentes de um banco.
 
+Agentes disponíveis:
 
-async def executar_supervisor(texto_usuario: str) -> str:
-    agente = await classificar_pergunta(texto_usuario)
+cartao_credito
+abrir_conta
 
-    if agente == "cartao_credito":
-        resultado = await agente_cartao_credito.ainvoke(
-            {"messages": [HumanMessage(content=texto_usuario)]}
-        )
+Uma pergunta pode exigir mais de um agente.
 
-    elif agente == "abrir_conta":
-        resultado = await agente_abertura_conta.ainvoke(
-            {"messages": [HumanMessage(content=texto_usuario)]}
-        )
+Responda apenas em JSON.
 
-    else:
-        return (
-            "Não consegui entender a sua solicitação. "
-            "Por favor, reformule a pergunta."
-        )
+Pergunta:
+{query}
 
-    mensagem_ia = resultado["messages"][-1]
+{parser.get_format_instructions()}
+"""
 
-    return str(mensagem_ia.content)
+    resposta = __llm.invoke(prompt)
+
+    resultado = parser.parse(str(resposta.content))
+
+    agentes = resultado["agents"]
+
+    logger.info(f"Agentes selecionados: {agentes}")
+
+    return [{"query": query, "agent": agente} for agente in agentes]
