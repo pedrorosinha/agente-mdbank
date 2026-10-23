@@ -5,10 +5,11 @@ from typing import Annotated, TypedDict
 
 import httpx
 from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
-from a2a.types import Message, Part, Role, TextPart
+from a2a.helpers import get_artifact_text, get_message_text
+from a2a.types import Message, Part, Role, SendMessageRequest
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
-from src.agents import classifique_intencao_do_usuario
+from src.agents import classifique_intencao_usuario
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class State(TypedDict):
 
 async def request_agent(message: str, agent_url: str) -> str:
     if agent_url not in CLIENT_CACHE:
-        logger.info(f"Descobrindo AgentCard em {agent_url}")
+        logger.info("Descobrindo AgentCard em %s", agent_url)
 
         resolver = A2ACardResolver(
             httpx_client=HTTPX_CLIENT,
@@ -37,34 +38,56 @@ async def request_agent(message: str, agent_url: str) -> str:
         )
 
         agent_card = await resolver.get_agent_card()
-        logger.info(f"Agent encontrado: {agent_card.name}")
+        logger.info("Agent encontrado: %s", agent_card.name)
 
-        config = ClientConfig(httpx_client=HTTPX_CLIENT, streaming=False)
+        config = ClientConfig(
+            httpx_client=HTTPX_CLIENT,
+            streaming=False,
+        )
+
         factory = ClientFactory(config)
         CLIENT_CACHE[agent_url] = factory.create(agent_card)
 
     client = CLIENT_CACHE[agent_url]
 
     msg = Message(
-        role=Role.user,
+        role=Role.ROLE_USER,
         message_id=str(uuid.uuid4()),
-        parts=[Part(root=TextPart(text=message))],
+        parts=[Part(text=message)],
     )
 
-    logger.info(f"Enviando mensagem para agente: {message}")
+    request = SendMessageRequest(message=msg)
 
-    async for event in client.send_message(msg):
-        if isinstance(event, Message):
-            for part in event.parts:
-                if part.root.kind == "text":
-                    return part.root.text
+    logger.info("Enviando mensagem para %s", agent_url)
+
+    async for event in client.send_message(request):
+        if event.HasField("message"):
+            resposta = get_message_text(event.message)
+
+            if resposta:
+                return resposta
+
+        if event.HasField("task"):
+            task = event.task
+
+            for artifact in task.artifacts:
+                resposta = get_artifact_text(artifact)
+
+                if resposta:
+                    return resposta
+
+            if task.status.HasField("message"):
+                resposta = get_message_text(task.status.message)
+
+                if resposta:
+                    return resposta
 
     return "Sem resposta do agente."
 
 
 def no_de_roteamento(state: State):
     query = state.get("query", "")
-    classifications = classifique_intencao_do_usuario(query)
+    classifications = classifique_intencao_usuario(query)
     logger.info(f"Classificação: {classifications}")
     return [Send(c["agent"], {"query": c["query"]}) for c in classifications]
 
