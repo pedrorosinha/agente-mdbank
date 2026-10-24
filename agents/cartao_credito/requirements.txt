@@ -4,6 +4,7 @@ uvicorn
 langchain
 langchain_openai
 langchain-community
+langchain-mcp-adapters
 langchain-groq
 httpx
 python-dotenv
