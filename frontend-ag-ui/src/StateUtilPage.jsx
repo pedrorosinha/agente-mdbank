@@ -1,183 +1,465 @@
-// StateUtilPage.jsx
-import React from "react";
+import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { motion, AnimatePresence } from "framer-motion";
+
 import { useAppState } from "./StateContext";
 import AppLayout from "./Layout";
 
-export default function StateUtilPage() {
-  const { state } = useAppState();
-  const responses = state.responses || [];
+const cardVariants = {
+  hidden: {
+    opacity: 0,
+    y: 15,
+  },
+  visible: {
+    opacity: 1,
+    y: 0,
+  },
+};
 
-  // -------------------------
-  // Função para extrair dados
-  // -------------------------
-  const extractData = (text) => {
-    if (typeof text !== "string") return null;
-    const data = {};
+// --------------------------------------------------
+// SEGURANÇA
+// --------------------------------------------------
 
-    const nameMatch = text.match(
-      /(?:\**\s*nome\s*(?:completo)?\s*\**\s*[:\-]?\s*)([\p{L}\s]+)/iu,
-    );
-    if (nameMatch) data.Nome = nameMatch[1].trim();
+function maskCPF(cpf) {
+  if (!cpf) return "";
 
-    const cpfMatch = text.match(/cpf\s*[:\-]?\s*([\d.-]{11,14})/i);
-    if (cpfMatch) data.CPF = cpfMatch[1].trim();
+  const digits = String(cpf).replace(/\D/g, "");
 
-    const accountMatch = text.match(
-      /(?:\**\s*N[uú]mero\s*(?:da\s*)?conta\s*\**\s*[:\-]?\s*)(\d+)/i,
-    );
-    if (accountMatch) data.Conta = accountMatch[1].trim();
-
-    const saldoMatch = text.match(
-      /(?:\**\s*Saldo\s*\**\s*[:\-]?\s*R\$\s*)([\d.,]+)/i,
-    );
-    if (saldoMatch) data.Saldo = `R$ ${saldoMatch[1].trim()}`;
-
-    const cardNumberMatch = text.match(
-      /(?:n[uú]mero\s*(?:do\s*cart[ãa]o)?\s*[:]?[\s\*]*)(\d{4,16})/i,
-    );
-    if (cardNumberMatch) data.CartaoNumero = cardNumberMatch[1].trim();
-
-    const cardTypeMatch = text.match(
-      /(?:tipo\s*[:]?[\s\*]*)([\p{L}\s]+)[\*]*/iu,
-    );
-    if (cardTypeMatch) data.CartaoTipo = cardTypeMatch[1].trim();
-
-    const cardLimitMatch = text.match(
-      /limite\s*(?:disponível)?\s*[:]?[\sR$]*([\d.,]+)/i,
-    );
-    if (cardLimitMatch) data.CartaoLimite = `R$ ${cardLimitMatch[1].trim()}`;
-
-    return Object.keys(data).length ? data : null;
-  };
-
-  // ------------------------------
-  // Preparar respostas filtradas
-  // ------------------------------
-  const filteredResponses = [];
-  for (const r of responses) {
-    if (typeof r === "string") {
-      filteredResponses.push({ message: r, data: extractData(r) });
-    } else {
-      for (const value of Object.values(r)) {
-        if (value && value.trim())
-          filteredResponses.push({ message: value, data: extractData(value) });
-      }
-    }
+  if (digits.length !== 11) {
+    return "***.***.***-**";
   }
 
-  // ------------------------------
-  // Função para mascarar cartão
-  // ------------------------------
-  const maskCardNumber = (number) => {
-    if (!number) return "**** **** **** ****";
-    const clean = number.replace(/\D/g, "");
-    if (clean.length <= 8) return clean.slice(0, 4) + " ****";
-    return `${clean.slice(0, 4)} **** **** ${clean.slice(-2)}`;
+  return `***.***.${digits.slice(6, 9)}-**`;
+}
+
+function maskCardNumber(number) {
+  if (!number) return "**** **** **** ****";
+
+  const digits = String(number).replace(/\D/g, "");
+
+  if (digits.length < 4) {
+    return "****";
+  }
+
+  return `**** **** **** ${digits.slice(-4)}`;
+}
+
+function sanitizeMessage(message) {
+  if (typeof message !== "string") {
+    return "";
+  }
+
+  return message
+    // CPF formatado
+    .replace(
+      /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g,
+      (cpf) => maskCPF(cpf),
+    )
+    // CPF após rótulo
+    .replace(
+      /\b(CPF\s*:\s*)(\d{11})\b/gi,
+      (_, label, cpf) => `${label}${maskCPF(cpf)}`,
+    )
+    // Cartão após rótulo
+    .replace(
+      /\b((?:número\s+do\s+)?cartão\s*:\s*)([\d -]{13,23})/gi,
+      (_, label, number) =>
+        `${label}${maskCardNumber(number)}`,
+    );
+}
+
+// --------------------------------------------------
+// NORMALIZAÇÃO DAS RESPOSTAS
+// --------------------------------------------------
+
+function normalizeResponses(responses) {
+  if (!Array.isArray(responses)) {
+    return [];
+  }
+
+  return responses.flatMap((item, index) => {
+    if (typeof item === "string") {
+      return [
+        {
+          id: `response-${index}`,
+          agent: "supervisor",
+          message: item,
+          data: null,
+        },
+      ];
+    }
+
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    // Formato atual do supervisor AG-UI:
+    // { agent: "abrir_conta", response: "..." }
+    if ("agent" in item && "response" in item) {
+      const response = item.response;
+
+      return [
+        {
+          id: `response-${index}`,
+          agent: String(item.agent || "supervisor"),
+          message:
+            typeof response === "string"
+              ? response
+              : JSON.stringify(response, null, 2),
+          data:
+            response &&
+            typeof response === "object" &&
+            !Array.isArray(response)
+              ? response
+              : null,
+        },
+      ];
+    }
+
+    // Compatibilidade com o formato antigo:
+    // { abrir_conta: "..." }
+    return Object.entries(item).map(([agent, value], i) => ({
+      id: `response-${index}-${i}`,
+      agent,
+      message:
+        typeof value === "string"
+          ? value
+          : JSON.stringify(value, null, 2),
+      data:
+        value && typeof value === "object"
+          ? value
+          : null,
+    }));
+  });
+}
+
+// --------------------------------------------------
+// NOMES DOS AGENTES
+// --------------------------------------------------
+
+function getAgentName(agent) {
+  const names = {
+    abrir_conta: "Abertura de Conta",
+    cartao_credito: "Cartão de Crédito",
+    supervisor: "Supervisor",
   };
 
-  // ------------------------------
-  // Motion Variants
-  // ------------------------------
-  const cardVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0 },
-  };
+  return names[agent] || agent;
+}
+
+// --------------------------------------------------
+// BADGES
+// --------------------------------------------------
+
+function InfoBadge({ label, value }) {
+  return (
+    <div className="rounded-xl bg-gray-800 border border-gray-700 px-4 py-3">
+      <p className="text-xs text-gray-400 mb-1">{label}</p>
+
+      <p className="text-sm font-medium text-white break-words">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+// --------------------------------------------------
+// INFORMAÇÕES ESTRUTURADAS
+// --------------------------------------------------
+
+function StructuredData({ data }) {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const nome = data.nome || data.Nome;
+
+  const cpf = data.cpf || data.CPF;
+
+  const numeroConta =
+    data.numero_conta ||
+    data.numeroConta ||
+    data.Conta;
+
+  const saldo = data.saldo ?? data.Saldo;
+
+  const tipoCartao =
+    data.tipo_cartao ||
+    data.CartaoTipo;
+
+  const numeroCartao =
+    data.numero_cartao ||
+    data.CartaoNumero;
+
+  const limite =
+    data.limite ??
+    data.CartaoLimite;
+
+  const hasData = [
+    nome,
+    cpf,
+    numeroConta,
+    saldo,
+    tipoCartao,
+    numeroCartao,
+    limite,
+  ].some(
+    (value) =>
+      value !== null &&
+      value !== undefined &&
+      value !== "",
+  );
+
+  if (!hasData) {
+    return null;
+  }
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+      {nome && (
+        <InfoBadge
+          label="Nome"
+          value={nome}
+        />
+      )}
+
+      {cpf && (
+        <InfoBadge
+          label="CPF"
+          value={maskCPF(cpf)}
+        />
+      )}
+
+      {numeroConta && (
+        <InfoBadge
+          label="Conta"
+          value={String(numeroConta)}
+        />
+      )}
+
+      {saldo !== undefined && saldo !== null && (
+        <InfoBadge
+          label="Saldo"
+          value={String(saldo)}
+        />
+      )}
+
+      {tipoCartao && (
+        <InfoBadge
+          label="Tipo de cartão"
+          value={tipoCartao}
+        />
+      )}
+
+      {numeroCartao && (
+        <InfoBadge
+          label="Número do cartão"
+          value={maskCardNumber(numeroCartao)}
+        />
+      )}
+
+      {limite !== undefined && limite !== null && (
+        <InfoBadge
+          label="Limite"
+          value={String(limite)}
+        />
+      )}
+    </div>
+  );
+}
+
+// --------------------------------------------------
+// COMPONENTE PRINCIPAL
+// --------------------------------------------------
+
+export default function StateUtilPage() {
+  const context = useAppState();
+
+  const state = context?.state || {};
+
+  const responses = useMemo(
+    () => normalizeResponses(state.responses),
+    [state.responses],
+  );
+
+  const agents = Array.isArray(state.agents)
+    ? state.agents
+    : [];
+
+  const hasState = Object.keys(state).length > 0;
 
   return (
     <AppLayout>
-      <div className="p-6 flex-1 overflow-auto flex flex-col gap-6 bg-gray-900">
-        <h1 className="text-3xl font-bold mb-6 text-white">
-          📋 Histórico de Respostas
-        </h1>
+      <div className="flex-1 min-h-0 overflow-y-auto bg-gray-900 p-6 text-white">
+        <div className="max-w-5xl mx-auto space-y-6">
 
-        {filteredResponses.length === 0 ? (
-          <p className="text-gray-400 text-lg">
-            Nenhuma resposta registrada ainda.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-4">
-            <AnimatePresence>
-              {filteredResponses.map(({ message, data }, i) => {
-                const isCard = data && data.CartaoNumero && data.CartaoTipo;
+          {/* CABEÇALHO */}
 
-                return (
-                  <motion.div
-                    key={i}
-                    initial="hidden"
-                    animate="visible"
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    variants={cardVariants}
-                    transition={{ duration: 0.3, ease: "easeOut" }}
-                    className={`p-4 rounded-2xl shadow-lg max-w-xl w-full ${
-                      data
-                        ? isCard
-                          ? "self-end bg-gradient-to-r from-blue-600 to-blue-400"
-                          : "bg-green-700 self-end"
-                        : "bg-gray-700 self-start"
-                    } hover:scale-[1.02] transition-transform duration-200`}
-                    title={
-                      data ? "Informação registrada" : "Mensagem do sistema"
-                    }
-                  >
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      className="whitespace-pre-wrap text-white"
-                    >
-                      {message}
-                    </ReactMarkdown>
-                    {data && (
-                      <div className="flex flex-col gap-3 mt-3">
-                        {isCard ? (
-                          <div className="relative rounded-2xl shadow-xl w-80 font-sans overflow-hidden">
-                            {/* O gradiente azul agora só no cartão */}
-                            <div className="bg-gradient-to-r from-blue-700 to-blue-300 p-6">
-                              <div className="flex justify-between items-center mb-4 text-white">
-                                <span className="text-lg font-bold">
-                                  {data.CartaoTipo}
-                                </span>
-                                <span className="text-xl font-bold">VISA</span>
-                              </div>
-                              <div className="text-xl font-mono tracking-widest mb-4 text-white">
-                                {maskCardNumber(data.CartaoNumero)}
-                              </div>
-                              {data.CartaoLimite && (
-                                <div className="flex justify-between text-sm opacity-90 text-white">
-                                  <span>Limite</span>
-                                  <span>{data.CartaoLimite}</span>
-                                </div>
-                              )}
-                            </div>
+          <div>
+            <h1 className="text-3xl font-bold">
+              📋 Estado Compartilhado
+            </h1>
 
-                            {/* Nome do usuário fora do gradiente */}
-                            {data.Nome && (
-                              <div className="mt-2 p-2 text-sm uppercase opacity-90 bg-gray-800 text-white rounded-b-2xl">
-                                {data.Nome}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap gap-2">
-                            {Object.entries(data).map(([key, value]) => (
-                              <span
-                                key={key}
-                                className="bg-gray-800 px-3 py-1 rounded-full text-sm text-white"
-                              >
-                                {key}: {value}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </motion.div>
-                );
-              })}
-            </AnimatePresence>
+            <p className="text-gray-400 mt-2">
+              Acompanhe os dados compartilhados entre
+              o supervisor e os agentes do MDBank.
+            </p>
           </div>
-        )}
+
+          {/* RESUMO */}
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+            <InfoBadge
+              label="Agentes selecionados"
+              value={agents.length}
+            />
+
+            <InfoBadge
+              label="Respostas recebidas"
+              value={responses.length}
+            />
+
+            <InfoBadge
+              label="Estado"
+              value={
+                hasState
+                  ? "Disponível"
+                  : "Aguardando atualização"
+              }
+            />
+
+          </div>
+
+          {/* SOLICITAÇÃO ORIGINAL */}
+
+          {state.user_query && (
+            <div className="rounded-2xl bg-gray-800 border border-gray-700 p-5">
+              <h2 className="font-semibold mb-2">
+                Solicitação do usuário
+              </h2>
+
+              <p className="text-gray-300">
+                {sanitizeMessage(state.user_query)}
+              </p>
+            </div>
+          )}
+
+          {/* AGENTES */}
+
+          {agents.length > 0 && (
+            <div className="rounded-2xl bg-gray-800 border border-gray-700 p-5">
+              <h2 className="font-semibold mb-4">
+                Agentes envolvidos
+              </h2>
+
+              <div className="flex flex-wrap gap-2">
+                {agents.map((agent) => (
+                  <span
+                    key={agent}
+                    className="rounded-full bg-blue-600/20 text-blue-300 border border-blue-500/30 px-4 py-2 text-sm"
+                  >
+                    {getAgentName(agent)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* RESPOSTAS */}
+
+          <div>
+            <h2 className="text-xl font-semibold mb-4">
+              Histórico de Respostas
+            </h2>
+
+            {responses.length === 0 ? (
+              <div className="rounded-2xl bg-gray-800 border border-gray-700 p-8 text-center">
+                <p className="text-gray-400">
+                  Nenhuma resposta registrada ainda.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <AnimatePresence initial={false}>
+                  {responses.map((response) => (
+                    <motion.div
+                      key={response.id}
+                      variants={cardVariants}
+                      initial="hidden"
+                      animate="visible"
+                      exit="hidden"
+                      transition={{ duration: 0.3 }}
+                      className="rounded-2xl bg-gray-800 border border-gray-700 p-5 shadow-lg"
+                    >
+
+                      {/* IDENTIFICAÇÃO */}
+
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-sm font-semibold text-blue-300">
+                          🤖 {getAgentName(response.agent)}
+                        </span>
+
+                        <span className="text-xs text-green-400">
+                          Resposta recebida
+                        </span>
+                      </div>
+
+                      {/* MENSAGEM */}
+
+                      <div className="prose prose-invert max-w-none text-gray-100">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                        >
+                          {sanitizeMessage(response.message)}
+                        </ReactMarkdown>
+                      </div>
+
+                      {/* DADOS ESTRUTURADOS */}
+
+                      <StructuredData data={response.data} />
+
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+
+          {/* JSON DO ESTADO */}
+
+          <div className="rounded-2xl bg-gray-950 border border-gray-700 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-700">
+              <h2 className="font-semibold">
+                Estado AG-UI
+              </h2>
+
+              <p className="text-xs text-gray-400 mt-1">
+                Visualização de diagnóstico
+              </p>
+            </div>
+
+            <pre className="p-5 overflow-x-auto text-xs text-green-400">
+              {JSON.stringify(
+                {
+                  user_query: sanitizeMessage(
+                    state.user_query || "",
+                  ),
+                  agents,
+                  response_count: responses.length,
+                  responses: responses.map((item) => ({
+                    agent: item.agent,
+                    message: sanitizeMessage(item.message),
+                  })),
+                },
+                null,
+                2,
+              )}
+            </pre>
+          </div>
+
+        </div>
       </div>
     </AppLayout>
   );

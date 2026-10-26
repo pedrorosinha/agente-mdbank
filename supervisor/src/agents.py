@@ -1,9 +1,13 @@
 import logging
 import os
+from typing import Any
 
 from dotenv import load_dotenv
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_groq import ChatGroq
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -17,6 +21,8 @@ __llm = ChatGroq(
     reasoning_format="hidden",
 )
 
+memory = InMemorySaver()
+
 
 class RouterOutput(BaseModel):
     agents: list[str] = Field(
@@ -26,86 +32,77 @@ class RouterOutput(BaseModel):
 
 parser = JsonOutputParser(pydantic_object=RouterOutput)
 
-AGENTES_VALIDOS = {"cartao_credito", "abrir_conta"}
+
+async def build_router_agent():
+    agent = create_agent(
+        __llm,
+        tools=[],
+        system_prompt=f"""
+Você é o roteador de agentes do MDBank, um banco digital moderno, seguro e confiável, especializado em fornecer soluções financeiras personalizadas para cada cliente.
+
+Objetivo do MDBank:
+- Auxiliar clientes na abertura de contas e emissão de cartões de forma rápida, segura e transparente.
+- Garantir que cada cliente receba produtos financeiros adequados ao seu perfil.
+- Fornecer informações claras sobre serviços, produtos e processos bancários.
+- Evitar informações incorretas, inconsistentes ou inventadas.
+
+Função do roteador:
+- Identificar a intenção do cliente de forma precisa.
+- Selecionar os agentes apropriados (cartao_credito, abrir_conta) com base no histórico do cliente e no contexto da conversa.
+- Aplicar regras de negócios do MDBank de maneira consistente.
+
+Agentes disponíveis:
+- cartao_credito: responsável por gerenciar solicitações relacionadas a cartões de crédito.
+- abrir_conta: responsável por auxiliar na abertura de contas correntes e digitais.
+
+Regras IMPORTANTES:
+1. Utilize sempre o contexto da conversa (memória) e histórico do cliente.
+2. Se o cliente já possui conta, NÃO chame abrir_conta novamente.
+3. Uma pergunta pode exigir mais de um agente.
+4. Nunca invente informações ou dados de clientes.
+5. Informe claramente se alguma ação não puder ser realizada (ex: cliente já possui conta, dados incompletos, requisitos não atendidos).
+6. Ao lidar com solicitações sensíveis (dados de conta, informações financeiras pessoais), sempre oriente o cliente a acessar o aplicativo oficial ou entrar em contato com suporte seguro.
+7. Mantenha linguagem profissional, educada, objetiva e empática, transmitindo confiança de banco real.
+8. Para onboarding, forneça explicações sobre o motivo de abrir conta, benefícios do MDBank, e passos que o cliente precisa seguir, caso ele esteja iniciando a relação com o banco.
 
 
-def classifique_intencao_usuario(query: str) -> list[dict]:
-    """
-    Classifica a pergunta e retorna quais agentes devem ser chamados.
-    """
+- JSON deve ser válido e conter apenas os agentes selecionados.
+- Evite qualquer texto fora do JSON no output.
 
-    prompt = f"""
-Você é o roteador de agentes do banco MDBank.
+Exemplo de interpretação do prompt:
+- Cliente pede cartão, mas não tem conta → selecione abrir_conta primeiro.
+- Cliente já possui conta → selecione cartao_credito se aplicável.
+- Cliente pergunta sobre benefícios do banco → selecione abrir_conta ou ambos se houver necessidade de interação com múltiplos agentes.
 
-Sua responsabilidade é escolher os agentes adequados para
-atender à solicitação do usuário.
+Responda SEMPRE em JSON no formato:
+{parser.get_format_instructions()!r}
+""",
+        checkpointer=memory,
+    )
+    return agent
 
-AGENTES DISPONÍVEIS:
 
-1. cartao_credito
+async def classifique_intencao_do_usuario(
+    query: str, thread_id: str = "1"
+) -> list[dict[str, Any]]:
+    agent = await build_router_agent()
 
-Responsabilidades:
-- Solicitar cartões de crédito.
-- Consultar cartões.
-- Consultar limites.
-- Aumentar limites.
-- Explicar tipos de cartões.
+    try:
+        resultado = await agent.ainvoke(
+            {"messages": [HumanMessage(content=query)]},
+            {"configurable": {"thread_id": thread_id}},
+        )
 
-2. abrir_conta
+        resposta_texto = resultado["messages"][-1].content
 
-Responsabilidades:
-- Abrir contas bancárias.
-- Consultar contas.
-- Explicar tipos de contas.
-- Realizar pesquisas na internet usando DuckDuckGo.
-- Buscar informações sobre assuntos externos ao banco.
+        parsed = parser.parse(resposta_texto)
 
-REGRAS:
+        agentes = parsed.get("agents", [])
 
-- Uma pergunta pode exigir mais de um agente.
-- Se o usuário solicitar uma pesquisa na internet,
-  selecione obrigatoriamente "abrir_conta".
-- Se a pergunta envolver abertura de conta,
-  selecione "abrir_conta".
-- Se envolver cartões de crédito,
-  selecione "cartao_credito".
-- Não invente nomes de agentes.
-- Não retorne agentes duplicados.
-- Se não houver correspondência clara,
-  selecione "abrir_conta" como agente padrão.
+        logger.info(f"Agentes selecionados: {agentes}")
 
-EXEMPLOS:
+        return [{"query": query, "agent": agente} for agente in agentes]
 
-Pergunta: Quero abrir uma conta
-Resposta: {{"agents": ["abrir_conta"]}}
-
-Pergunta: Quero solicitar um cartão platinum
-Resposta: {{"agents": ["cartao_credito"]}}
-
-Pergunta: Quero buscar sobre Backend for Agents
-Resposta: {{"agents": ["abrir_conta"]}}
-
-Pergunta: Quero abrir uma conta e solicitar um cartão
-Resposta: {{"agents": ["abrir_conta", "cartao_credito"]}}
-
-Pergunta do usuário:
-{query}
-
-{parser.get_format_instructions()}
-"""
-
-    resposta = __llm.invoke(prompt)
-
-    resultado = parser.parse(str(resposta.content))
-
-    agentes = resultado.get("agents", [])
-
-    agentes = [agente for agente in dict.fromkeys(agentes) if agente in AGENTES_VALIDOS]
-
-    if not agentes:
-        logger.warning("Nenhum agente identificado. Utilizando abrir_conta.")
-        agentes = ["abrir_conta"]
-
-    logger.info(f"Agentes selecionados: {agentes}")
-
-    return [{"query": query, "agent": agente} for agente in agentes]
+    except Exception as e:
+        logger.error(f"Erro no router: {e}")
+        return [{"query": query, "agent": "abrir_conta"}]

@@ -1,5 +1,4 @@
 services:
-
   supervisor:
     build: ./supervisor
     container_name: mdbank_supervisor_agents
@@ -43,3 +42,18 @@ services:
       - ./recursos:/app
     ports:
       - "8084:8000"
+
+  frontend-ag-ui:
+    build: ./frontend-ag-ui
+    container_name: frontend-ag-ui
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend-ag-ui:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_INTERVAL=1000
+      - FAST_REFRESH=true
+    command: npm start
