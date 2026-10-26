@@ -16,11 +16,17 @@ __llm = ChatGroq(
     reasoning_format="hidden",
 )
 
+SMITHERY_URL = "https://duckduckgo-mcp-server--nickclyde.run.tools"
+
 client = MultiServerMCPClient(
     {
         "conta": {
             "transport": "http",
             "url": "http://recursos:8000/mcp_gateway",
+        },
+        "duckduckgo": {
+            "transport": "http",
+            "url": f"{SMITHERY_URL}/?api_key={os.getenv('SMITHERY_API_KEY')}",
         }
     }
 )
@@ -52,8 +58,13 @@ async def build_agent():
             "- Nunca invente dados\n"
             "- Sempre use tools\n"
             "- Use mensagens claras para o cliente\n"
+            "- Quando o cliente solicitar uma pesquisa na internet, "
+            "use a ferramenta search do DuckDuckGo.\n"
+            "- Utilize fetch_content quando precisar consultar detalhes de uma página.\n"
+            "- Não utilize resultados de buscas públicas para confirmar identidade "
+            "ou validar dados bancários de clientes.\n"
         ),
-        checkpointer=memory
+        checkpointer=memory,
     )
 
     return agent
@@ -64,7 +75,7 @@ async def run_agent(mensagem: str, thread_id: str = "1"):
 
     resultado = await agent.ainvoke(
         {"messages": [HumanMessage(content=mensagem)]},
-        {"configurable": {"thread_id": thread_id}}
+        {"configurable": {"thread_id": thread_id}},
     )
 
     return resultado["messages"][-1].content
